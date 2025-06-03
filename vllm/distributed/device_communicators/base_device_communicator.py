@@ -1,9 +1,11 @@
 # SPDX-License-Identifier: Apache-2.0
 from typing import Optional
 
-import torch
-import torch.distributed as dist
-from torch.distributed import ProcessGroup
+from vllm.frameworks import current_framework
+
+
+dist = current_framework.distributed
+ProcessGroup = dist.ProcessGroup
 
 
 class DeviceCommunicatorBase:
@@ -16,10 +18,10 @@ class DeviceCommunicatorBase:
 
     def __init__(self,
                  cpu_group: ProcessGroup,
-                 device: Optional[torch.device] = None,
+                 device: Optional[current_framework.device] = None,
                  device_group: Optional[ProcessGroup] = None,
                  unique_name: str = ""):
-        self.device = device or torch.device("cpu")
+        self.device = device or current_framework.device("cpu")
         self.cpu_group = cpu_group
         self.device_group = device_group
         self.unique_name = unique_name
@@ -31,21 +33,21 @@ class DeviceCommunicatorBase:
         self.rank_in_group = dist.get_group_rank(self.cpu_group,
                                                  self.global_rank)
 
-    def all_reduce(self, input_: torch.Tensor) -> torch.Tensor:
+    def all_reduce(self, input_: current_framework.Tensor) -> current_framework.Tensor:
         dist.all_reduce(input_, group=self.device_group)
         return input_
 
-    def all_gather(self, input_: torch.Tensor, dim: int = -1) -> torch.Tensor:
+    def all_gather(self, input_: current_framework.Tensor, dim: int = -1) -> current_framework.Tensor:
         if dim < 0:
             # Convert negative dim to positive.
             dim += input_.dim()
         input_size = input_.size()
         # NOTE: we have to use concat-style all-gather here,
         # stack-style all-gather has compatibility issues with
-        # torch.compile . see https://github.com/pytorch/pytorch/issues/138795
+        # current_framework.compile . see https://github.com/pytorch/pytorch/issues/138795
         output_size = (input_size[0] * self.world_size, ) + input_size[1:]
         # Allocate output tensor.
-        output_tensor = torch.empty(output_size,
+        output_tensor = current_framework.empty(output_size,
                                     dtype=input_.dtype,
                                     device=input_.device)
         # All-gather.
@@ -62,9 +64,9 @@ class DeviceCommunicatorBase:
         return output_tensor
 
     def gather(self,
-               input_: torch.Tensor,
+               input_: current_framework.Tensor,
                dst: int = 0,
-               dim: int = -1) -> Optional[torch.Tensor]:
+               dim: int = -1) -> Optional[current_framework.Tensor]:
         """
         NOTE: We assume that the input tensor is on the same device across
         all the ranks.
@@ -79,38 +81,38 @@ class DeviceCommunicatorBase:
 
         # Allocate output tensor.
         if self.rank_in_group == dst:
-            gather_list = [torch.empty_like(input_) for _ in range(world_size)]
+            gather_list = [current_framework.empty_like(input_) for _ in range(world_size)]
         else:
             gather_list = None
         # Gather.
-        torch.distributed.gather(input_,
+        current_framework.distributed.gather(input_,
                                  gather_list,
                                  dst=self.ranks[dst],
                                  group=self.device_group)
         if self.rank_in_group == dst:
-            output_tensor = torch.cat(gather_list, dim=dim)
+            output_tensor = current_framework.cat(gather_list, dim=dim)
         else:
             output_tensor = None
         return output_tensor
 
-    def send(self, tensor: torch.Tensor, dst: Optional[int] = None) -> None:
+    def send(self, tensor: current_framework.Tensor, dst: Optional[int] = None) -> None:
         """Sends a tensor to the destination rank in a non-blocking way"""
         """NOTE: `dst` is the local rank of the destination rank."""
         if dst is None:
             dst = (self.rank_in_group + 1) % self.world_size
-        torch.distributed.send(tensor, self.ranks[dst], self.device_group)
+        current_framework.distributed.send(tensor, self.ranks[dst], self.device_group)
 
     def recv(self,
-             size: torch.Size,
-             dtype: torch.dtype,
-             src: Optional[int] = None) -> torch.Tensor:
+             size: current_framework.Size,
+             dtype: current_framework.dtype,
+             src: Optional[int] = None) -> current_framework.Tensor:
         """Receives a tensor from the source rank."""
         """NOTE: `src` is the local rank of the source rank."""
         if src is None:
             src = (self.rank_in_group - 1) % self.world_size
 
-        tensor = torch.empty(size, dtype=dtype, device=self.device)
-        torch.distributed.recv(tensor, self.ranks[src], self.device_group)
+        tensor = current_framework.empty(size, dtype=dtype, device=self.device)
+        current_framework.distributed.recv(tensor, self.ranks[src], self.device_group)
         return tensor
 
     def destroy(self):

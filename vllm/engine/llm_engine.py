@@ -12,7 +12,7 @@ from typing import (TYPE_CHECKING, Any, Callable, ClassVar, Deque, Dict,
 from typing import Sequence as GenericSequence
 from typing import Set, Type, Union, cast, overload
 
-import torch
+from vllm.frameworks import current_framework
 from typing_extensions import TypeVar, deprecated
 
 import vllm.envs as envs
@@ -1595,7 +1595,7 @@ class LLMEngine:
                 virtual_engine].last_output = last_output
 
     def _get_last_sampled_token_ids(
-            self, virtual_engine: int) -> Optional[torch.Tensor]:
+            self, virtual_engine: int) -> Optional[current_framework.Tensor]:
         cached_last_output = self.cached_scheduler_outputs[
             virtual_engine].last_output
         if (self.scheduler_config.is_multi_step

@@ -10,14 +10,18 @@ import tempfile
 from itertools import product
 from typing import Dict, List, Optional, Sequence
 
-import torch.distributed as dist
-import torch.multiprocessing as mp
+from vllm.frameworks import current_framework
 
 import vllm.envs as envs
 from vllm.distributed.device_communicators.cuda_wrapper import CudaRTLibrary
 from vllm.logger import init_logger
 from vllm.utils import (cuda_device_count_stateless,
                         update_environment_variables)
+
+
+dist = current_framework.distributed
+mp = current_framework.multiprocessing
+
 
 logger = init_logger(__name__)
 

@@ -10,9 +10,7 @@ from multiprocessing import shared_memory
 from typing import List, Optional, Tuple, Union
 from unittest.mock import patch
 
-import torch
-import torch.distributed as dist
-from torch.distributed import ProcessGroup
+from vllm.frameworks import current_framework
 from zmq import IPV6  # type: ignore
 from zmq import SUB, SUBSCRIBE, XPUB, XPUB_VERBOSE, Context  # type: ignore
 
@@ -23,6 +21,9 @@ from vllm.utils import (get_ip, get_open_port, get_open_zmq_ipc_path,
                         is_valid_ipv6_address)
 
 VLLM_RINGBUFFER_WARNING_INTERVAL = envs.VLLM_RINGBUFFER_WARNING_INTERVAL
+
+dist = current_framework.distributed
+ProcessGroup = dist.ProcessGroup
 
 logger = init_logger(__name__)
 
@@ -114,7 +115,7 @@ class ShmRingBuffer:
             # initialize the metadata section to 0
             with memoryview(self.shared_memory.buf[self.metadata_offset:]
                             ) as metadata_buffer:
-                torch.frombuffer(metadata_buffer, dtype=torch.uint8).fill_(0)
+                current_framework.frombuffer(metadata_buffer, dtype=current_framework.uint8).fill_(0)
         else:
             # we are opening an existing buffer
             self.is_creator = False
