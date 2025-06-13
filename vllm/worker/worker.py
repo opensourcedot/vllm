@@ -4,8 +4,7 @@ import gc
 import os
 from typing import Dict, List, Optional, Set, Tuple, Type, Union
 
-import torch
-import torch.distributed
+from vllm.frameworks import current_framework
 
 import vllm.envs as envs
 from vllm.config import VllmConfig
@@ -59,7 +58,7 @@ class Worker(LocalOrDistributedWorkerBase):
         self.distributed_init_method = distributed_init_method
         self.is_driver_worker = is_driver_worker
         if self.model_config.trust_remote_code:
-            # note: lazy import to avoid importing torch before initializing
+            # note: lazy import to avoid importing current_framework before initializing
             from vllm.utils import init_cached_hf_modules
             init_cached_hf_modules()
 
@@ -92,22 +91,22 @@ class Worker(LocalOrDistributedWorkerBase):
         # initialize_cache.
         self.cache_engine: List[CacheEngine]
         # Initialize gpu_cache as pooling models don't initialize kv_caches
-        self.gpu_cache: Optional[List[List[torch.Tensor]]] = None
+        self.gpu_cache: Optional[List[List[current_framework.Tensor]]] = None
         self._seq_group_metadata_cache: Dict[str, SequenceGroupMetadata] = {}
 
-        # Torch profiler. Enabled and configured through env vars:
+        # current_framework profiler. Enabled and configured through env vars:
         # VLLM_TORCH_PROFILER_DIR=/path/to/save/trace
         if envs.VLLM_TORCH_PROFILER_DIR:
             torch_profiler_trace_dir = envs.VLLM_TORCH_PROFILER_DIR
             logger.info("Profiling enabled. Traces will be saved to: %s",
                         torch_profiler_trace_dir)
-            self.profiler = torch.profiler.profile(
+            self.profiler = current_framework.profiler.profile(
                 activities=[
-                    torch.profiler.ProfilerActivity.CPU,
-                    torch.profiler.ProfilerActivity.CUDA,
+                    current_framework.profiler.ProfilerActivity.CPU,
+                    current_framework.profiler.ProfilerActivity.CUDA,
                 ],
                 with_stack=True,
-                on_trace_ready=torch.profiler.tensorboard_trace_handler(
+                on_trace_ready=current_framework.profiler.tensorboard_trace_handler(
                     torch_profiler_trace_dir, use_gzip=True))
         else:
             self.profiler = None
@@ -123,10 +122,10 @@ class Worker(LocalOrDistributedWorkerBase):
         self.profiler.stop()
 
     def sleep(self, level: int = 1) -> None:
-        free_bytes_before_sleep = torch.cuda.mem_get_info()[0]
+        free_bytes_before_sleep = current_framework.cuda.mem_get_info()[0]
         allocator = CuMemAllocator.get_instance()
         allocator.sleep(offload_tags=("weights", ) if level == 1 else tuple())
-        free_bytes_after_sleep, total = torch.cuda.mem_get_info()
+        free_bytes_after_sleep, total = current_framework.cuda.mem_get_info()
         freed_bytes = free_bytes_after_sleep - free_bytes_before_sleep
         used_bytes = total - free_bytes_after_sleep
         assert freed_bytes >= 0, "Memory usage increased after sleeping."
@@ -141,7 +140,7 @@ class Worker(LocalOrDistributedWorkerBase):
 
     def init_device(self) -> None:
         if self.device_config.device.type == "cuda":
-            # torch.distributed.all_reduce does not free the input tensor until
+            # current_framework.distributed.all_reduce does not free the input tensor until
             # the synchronization point. This causes the memory usage to grow
             # as the number of all_reduce calls increases. This env var disables
             # this behavior.
@@ -151,13 +150,13 @@ class Worker(LocalOrDistributedWorkerBase):
 
             # This env var set by Ray causes exceptions with graph building.
             os.environ.pop("NCCL_ASYNC_ERROR_HANDLING", None)
-            self.device = torch.device(f"cuda:{self.local_rank}")
-            torch.cuda.set_device(self.device)
+            self.device = current_framework.device(f"cuda:{self.local_rank}")
+            current_framework.cuda.set_device(self.device)
 
             _check_if_gpu_supports_dtype(self.model_config.dtype)
             gc.collect()
-            torch.cuda.empty_cache()
-            torch.cuda.reset_peak_memory_stats()
+            current_framework.cuda.empty_cache()
+            current_framework.cuda.reset_peak_memory_stats()
             self.baseline_snapshot = MemorySnapshot()
         else:
             raise RuntimeError(
@@ -201,7 +200,7 @@ class Worker(LocalOrDistributedWorkerBase):
         self.model_runner.save_tensorized_model(
             tensorizer_config=tensorizer_config, )
 
-    @torch.inference_mode()
+    @current_framework.inference_mode()
     def determine_num_available_blocks(self) -> Tuple[int, int]:
         """Profiles the peak memory usage of the model to determine how many
         KV blocks may be allocated without OOMs.
@@ -216,10 +215,10 @@ class Worker(LocalOrDistributedWorkerBase):
         """
         # Profile the memory usage of the model and get the maximum number of
         # cache blocks that can be allocated with the remaining free memory.
-        torch.cuda.empty_cache()
-        torch.cuda.reset_peak_memory_stats()
+        current_framework.cuda.empty_cache()
+        current_framework.cuda.reset_peak_memory_stats()
 
-        free_memory_pre_profile, total_gpu_memory = torch.cuda.mem_get_info()
+        free_memory_pre_profile, total_gpu_memory = current_framework.cuda.mem_get_info()
 
         # Execute a forward pass with dummy inputs to profile the memory usage
         # of the model.
@@ -273,7 +272,7 @@ class Worker(LocalOrDistributedWorkerBase):
     def _assert_memory_footprint_increased_during_profiling(self):
         # NOTE(woosuk): Here we assume that the other processes using the same
         # GPU did not change their memory usage during the profiling.
-        free_gpu_memory, total = torch.cuda.mem_get_info()
+        free_gpu_memory, total = current_framework.cuda.mem_get_info()
         cuda_memory = total - free_gpu_memory
         assert self.baseline_snapshot.cuda_memory < cuda_memory, (
             "Error in memory profiling. "
@@ -345,10 +344,10 @@ class Worker(LocalOrDistributedWorkerBase):
         return self.parallel_config.tensor_parallel_size > 1
 
     @property
-    def kv_cache(self) -> Optional[List[List[torch.Tensor]]]:
+    def kv_cache(self) -> Optional[List[List[current_framework.Tensor]]]:
         return self.gpu_cache
 
-    @torch.inference_mode()
+    @current_framework.inference_mode()
     def prepare_worker_input(
             self, execute_model_req: ExecuteModelRequest) -> WorkerInput:
         virtual_engine = execute_model_req.virtual_engine
@@ -356,18 +355,18 @@ class Worker(LocalOrDistributedWorkerBase):
         num_seq_groups = len(execute_model_req.seq_group_metadata_list)
         # `blocks_to_swap_in` and `blocks_to_swap_out` are cpu tensors.
         # they contain parameters to launch cudamemcpyasync.
-        blocks_to_swap_in = torch.tensor(execute_model_req.blocks_to_swap_in,
+        blocks_to_swap_in = current_framework.tensor(execute_model_req.blocks_to_swap_in,
                                          device="cpu",
-                                         dtype=torch.int64).view(-1, 2)
-        blocks_to_swap_out = torch.tensor(execute_model_req.blocks_to_swap_out,
+                                         dtype=current_framework.int64).view(-1, 2)
+        blocks_to_swap_out = current_framework.tensor(execute_model_req.blocks_to_swap_out,
                                           device="cpu",
-                                          dtype=torch.int64).view(-1, 2)
+                                          dtype=current_framework.int64).view(-1, 2)
         # `blocks_to_copy` is a gpu tensor. The src and tgt of
         # blocks to copy are in the same device, and `blocks_to_copy`
         # can be used directly within cuda kernels.
-        blocks_to_copy = torch.tensor(execute_model_req.blocks_to_copy,
+        blocks_to_copy = current_framework.tensor(execute_model_req.blocks_to_copy,
                                       device=self.device,
-                                      dtype=torch.int64).view(-1, 2)
+                                      dtype=current_framework.int64).view(-1, 2)
 
         return WorkerInput(
             num_seq_groups=num_seq_groups,
@@ -378,7 +377,7 @@ class Worker(LocalOrDistributedWorkerBase):
             num_steps=num_steps,
         )
 
-    @torch.inference_mode()
+    @current_framework.inference_mode()
     def execute_worker(self, worker_input: WorkerInput) -> None:
         virtual_engine = worker_input.virtual_engine
         # Issue cache operations.
@@ -510,9 +509,9 @@ def init_worker_distributed_environment(
     ensure_kv_transfer_initialized(vllm_config)
 
 
-def _check_if_gpu_supports_dtype(torch_dtype: torch.dtype):
+def _check_if_gpu_supports_dtype(torch_dtype: current_framework.dtype):
     # Check if the GPU supports the dtype.
-    if torch_dtype == torch.bfloat16:  # noqa: SIM102
+    if torch_dtype == current_framework.bfloat16:  # noqa: SIM102
         if not current_platform.has_device_capability(80):
             capability = current_platform.get_device_capability()
             gpu_name = current_platform.get_device_name()

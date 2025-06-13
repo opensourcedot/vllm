@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from typing import (TYPE_CHECKING, Any, Dict, List, Literal, Mapping, Optional,
                     Tuple, Type, Union, cast, get_args)
 
-import torch
+from vllm.frameworks import current_framework
 
 import vllm.envs as envs
 from vllm import version
@@ -163,7 +163,7 @@ class EngineArgs:
     fully_sharded_loras: bool = False
     lora_extra_vocab_size: int = 256
     long_lora_scaling_factors: Optional[Tuple[float]] = None
-    lora_dtype: Optional[Union[str, torch.dtype]] = 'auto'
+    lora_dtype: Optional[Union[str, current_framework.dtype]] = 'auto'
     max_cpu_loras: Optional[int] = None
     device: str = 'auto'
     num_scheduler_steps: int = 1
@@ -1425,7 +1425,7 @@ class EngineArgs:
             return False
 
         # Only Fp16 and Bf16 dtypes since we only support FA.
-        V1_SUPPORTED_DTYPES = [torch.bfloat16, torch.float16]
+        V1_SUPPORTED_DTYPES = [current_framework.bfloat16, current_framework.float16]
         if model_config.dtype not in V1_SUPPORTED_DTYPES:
             _raise_or_fallback(feature_name=f"--dtype {model_config.dtype}",
                                recommend_to_remove=False)

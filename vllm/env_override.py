@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 import os
 
-import torch
+from .frameworks import current_framework
 
 # set some common config/environment variables that should be set
 # for all processes created by vllm and all processes
@@ -18,4 +18,4 @@ os.environ['PYTORCH_NVML_BASED_CUDA_CHECK'] = '1'
 # see https://github.com/vllm-project/vllm/issues/10480
 os.environ['TORCHINDUCTOR_COMPILE_THREADS'] = '1'
 # see https://github.com/vllm-project/vllm/issues/10619
-torch._inductor.config.compile_threads = 1
+current_framework.set_inductor_compile_threads(1)
