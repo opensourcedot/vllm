@@ -10,8 +10,9 @@ import tempfile
 from itertools import product
 from typing import Dict, List, Optional, Sequence
 
-import torch.distributed as dist
-import torch.multiprocessing as mp
+from vllm.frameworks import current_framework
+import vllm.frameworks.distributed as dist
+import vllm.frameworks.multiprocessing as mp
 
 import vllm.envs as envs
 from vllm.distributed.device_communicators.cuda_wrapper import CudaRTLibrary

@@ -3,9 +3,9 @@
 from contextlib import contextmanager
 from typing import List, Optional, Union
 
-import torch
-import torch.distributed as dist
-from torch.distributed import ProcessGroup
+from vllm.frameworks import current_framework
+import vllm.frameworks.distributed as dist
+from vllm.frameworks.distributed import ProcessGroup
 
 import vllm.envs as envs
 from vllm import _custom_ops as ops
@@ -33,13 +33,13 @@ def _can_p2p(rank: int, world_size: int) -> bool:
         if envs.VLLM_SKIP_P2P_CHECK:
             logger.info(
                 "Skipping P2P check and trusting the driver's P2P report.")
-            return torch.cuda.can_device_access_peer(rank, i)
+            return current_framework.cuda.can_device_access_peer(rank, i)
         if not gpu_p2p_access_check(rank, i):
             return False
     return True
 
 
-def is_weak_contiguous(inp: torch.Tensor):
+def is_weak_contiguous(inp: current_framework.Tensor):
     return inp.is_contiguous() or (inp.storage().nbytes() -
                                    inp.storage_offset() * inp.element_size()
                                    == inp.numel() * inp.element_size())
@@ -52,7 +52,7 @@ class CustomAllreduce:
     # max_size: max supported allreduce size
     def __init__(self,
                  group: ProcessGroup,
-                 device: Union[int, str, torch.device],
+                 device: Union[int, str, current_framework.device],
                  max_size=8192 * 1024) -> None:
         """
         Args:
@@ -102,11 +102,11 @@ class CustomAllreduce:
             return
 
         if isinstance(device, int):
-            device = torch.device(f"cuda:{device}")
+            device = current_framework.device(f"cuda:{device}")
         elif isinstance(device, str):
-            device = torch.device(device)
-        # now `device` is a `torch.device` object
-        assert isinstance(device, torch.device)
+            device = current_framework.device(device)
+        # now `device` is a `current_framework.device` object
+        assert isinstance(device, current_framework.device)
         self.device = device
 
         cuda_visible_devices = envs.CUDA_VISIBLE_DEVICES
@@ -116,11 +116,11 @@ class CustomAllreduce:
             device_ids = list(range(cuda_device_count_stateless()))
 
         physical_device_id = device_ids[device.index]
-        tensor = torch.tensor([physical_device_id],
-                              dtype=torch.int,
+        tensor = current_framework.tensor([physical_device_id],
+                              dtype=current_framework.int,
                               device="cpu")
         gather_list = [
-            torch.tensor([0], dtype=torch.int, device="cpu")
+            current_framework.tensor([0], dtype=current_framework.int, device="cpu")
             for _ in range(world_size)
         ]
         dist.all_gather(gather_list, tensor, group=self.group)
@@ -164,8 +164,8 @@ class CustomAllreduce:
         # 8*world_size bytes where world_size is at most 8. Allocating 8MB
         # is enough for 131072 such tuples. The largest model I've seen only
         # needs less than 10000 of registered tuples.
-        self.rank_data = torch.empty(8 * 1024 * 1024,
-                                     dtype=torch.uint8,
+        self.rank_data = current_framework.empty(8 * 1024 * 1024,
+                                     dtype=current_framework.uint8,
                                      device=self.device)
         self.max_size = max_size
         self.rank = rank
@@ -210,7 +210,7 @@ class CustomAllreduce:
         offsets = [d[1] for d in all_data]  # type: ignore
         ops.register_graph_buffers(self._ptr, handles, offsets)
 
-    def should_custom_ar(self, inp: torch.Tensor):
+    def should_custom_ar(self, inp: current_framework.Tensor):
         if self.disabled:
             return False
         inp_size = inp.numel() * inp.element_size()
@@ -226,9 +226,9 @@ class CustomAllreduce:
         return False
 
     def all_reduce(self,
-                   inp: torch.Tensor,
+                   inp: current_framework.Tensor,
                    *,
-                   out: torch.Tensor = None,
+                   out: current_framework.Tensor = None,
                    registered: bool = False):
         """Performs an out-of-place all reduce.
         
@@ -237,7 +237,7 @@ class CustomAllreduce:
         buffer.
         """
         if out is None:
-            out = torch.empty_like(inp)
+            out = current_framework.empty_like(inp)
         if registered:
             ops.all_reduce(self._ptr, inp, out, 0, 0)
         else:
@@ -245,18 +245,18 @@ class CustomAllreduce:
                            self.max_size)
         return out
 
-    def custom_all_reduce(self, input: torch.Tensor) -> Optional[torch.Tensor]:
+    def custom_all_reduce(self, input: current_framework.Tensor) -> Optional[current_framework.Tensor]:
         """The main allreduce API that provides support for cuda graph."""
         # When custom allreduce is disabled, this will be None.
         if self.disabled or not self.should_custom_ar(input):
             return None
         if self._IS_CAPTURING:
-            if torch.cuda.is_current_stream_capturing():
+            if current_framework.cuda.is_current_stream_capturing():
                 return self.all_reduce(input, registered=True)
             else:
                 # If warm up, mimic the allocation pattern since custom
                 # allreduce is out-of-place.
-                return torch.empty_like(input)
+                return current_framework.empty_like(input)
         else:
             # Note: outside of cuda graph context, custom allreduce incurs a
             # cost of cudaMemcpy, which should be small (<=1% of overall

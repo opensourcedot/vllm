@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
 # this line makes it possible to directly load `libcudart.so` using `ctypes`
-import torch  # noqa
+from vllm.frameworks import current_framework  # noqa
 
 import vllm.envs as envs
 from vllm.logger import init_logger
