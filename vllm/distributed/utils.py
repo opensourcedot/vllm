@@ -11,13 +11,13 @@ import time
 from collections import deque
 from typing import Any, Deque, Dict, Optional, Sequence, Tuple
 
-import torch
-from torch.distributed import ProcessGroup, TCPStore
-from torch.distributed.distributed_c10d import (Backend, PrefixStore,
-                                                _get_default_timeout,
-                                                _unregister_process_group,
-                                                is_nccl_available)
-from torch.distributed.rendezvous import rendezvous
+from vllm.frameworks import current_framework
+from vllm.frameworks.distributed import ProcessGroup, TCPStore
+from vllm.frameworks.distributed.distributed_c10d import (Backend, PrefixStore,
+                                                            _get_default_timeout,
+                                                            _unregister_process_group,
+                                                            is_nccl_available)
+from vllm.frameworks.distributed.rendezvous import rendezvous
 
 import vllm.envs as envs
 from vllm.logger import init_logger
@@ -39,10 +39,10 @@ def divide(numerator, denominator):
 
 
 def split_tensor_along_last_dim(
-    tensor: torch.Tensor,
+    tensor: current_framework.Tensor,
     num_partitions: int,
     contiguous_split_chunks: bool = False,
-) -> Sequence[torch.Tensor]:
+) -> Sequence[current_framework.Tensor]:
     """ Split a tensor along its last dimension.
 
         Arguments:
@@ -58,8 +58,8 @@ def split_tensor_along_last_dim(
     last_dim = tensor.dim() - 1
     last_dim_size = divide(tensor.size()[last_dim], num_partitions)
     # Split.
-    tensor_list = torch.split(tensor, last_dim_size, dim=last_dim)
-    # NOTE: torch.split does not create contiguous tensors by default.
+    tensor_list = current_framework.split(tensor, last_dim_size, dim=last_dim)
+    # NOTE: current_framework.split does not create contiguous tensors by default.
     if contiguous_split_chunks:
         return tuple(chunk.contiguous() for chunk in tensor_list)
 
@@ -121,7 +121,7 @@ class StatelessProcessGroup:
     """
     rank: int
     world_size: int
-    store: torch._C._distributed_c10d.Store
+    store: current_framework._C._distributed_c10d.Store
     data_expiration_seconds: int = 3600  # 1 hour
 
     # dst rank -> counter
@@ -218,16 +218,16 @@ class StatelessProcessGroup:
         data_expiration_seconds: int = 3600,
         store_timeout: int = 300,
     ) -> "StatelessProcessGroup":
-        """A replacement for `torch.distributed.init_process_group` that does not
+        """A replacement for `current_framework.distributed.init_process_group` that does not
         pollute the global state.
 
-        If we have process A and process B called `torch.distributed.init_process_group`
+        If we have process A and process B called `current_framework.distributed.init_process_group`
         to form a group, and then we want to form another group with process A, B, C,
         D, it is not possible in PyTorch, because process A and process B have already
         formed a group, and process C and process D cannot join that group. This
         function is a workaround for this issue.
 
-        `torch.distributed.init_process_group` is a global call, while this function
+        `current_framework.distributed.init_process_group` is a global call, while this function
         is a stateless call. It will return a `StatelessProcessGroup` object that can be
         used for exchanging metadata. With this function, process A and process B
         can call `StatelessProcessGroup.create` to form a group, and then process A, B,
@@ -252,7 +252,7 @@ def stateless_init_torch_distributed_process_group(
         host: str, port: int, rank: int, world_size: int,
         backend: str) -> ProcessGroup:
     """
-    A replacement for `torch.distributed.init_process_group` that does not
+    A replacement for `current_framework.distributed.init_process_group` that does not
     pollute the global state. The created ProcessGroup object can be used for
     some operations such as `allreduce`, because it does not depend on the
     global rank. However, some operations such as `broadcast` cannot be used
@@ -304,16 +304,16 @@ def stateless_init_torch_distributed_process_group(
     )
 
     if backend == "gloo":
-        from torch.distributed.distributed_c10d import ProcessGroupGloo
+        from current_framework.distributed.distributed_c10d import ProcessGroupGloo
         backend_class = ProcessGroupGloo(prefix_store,
                                          group_rank,
                                          group_size,
                                          timeout=timeout)
         backend_type = ProcessGroup.BackendType.GLOO
-        device = torch.device("cpu")
+        device = current_framework.device("cpu")
     elif backend == "nccl":
         assert is_nccl_available()
-        from torch.distributed.distributed_c10d import ProcessGroupNCCL
+        from current_framework.distributed.distributed_c10d import ProcessGroupNCCL
 
         backend_options = ProcessGroupNCCL.Options()
         backend_options._timeout = timeout
@@ -321,9 +321,9 @@ def stateless_init_torch_distributed_process_group(
         backend_class = ProcessGroupNCCL(prefix_store, group_rank, group_size,
                                          backend_options)
         backend_type = ProcessGroup.BackendType.NCCL
-        device = torch.device("cuda")
+        device = current_framework.device("cuda")
     else:
-        raise RuntimeError(f"Unsupported torch distributed backend: {backend}")
+        raise RuntimeError(f"Unsupported current_framework distributed backend: {backend}")
 
     pg._set_default_backend(backend_type)
     backend_class._set_sequence_number_for_group()
@@ -340,6 +340,6 @@ def stateless_destroy_torch_distributed_process_group(
         stateless_init_torch_distributed_process_group().
     """
     # Lazy import for non-CUDA backends.
-    from torch.distributed.distributed_c10d import _shutdown_backend
+    from current_framework.distributed.distributed_c10d import _shutdown_backend
     _shutdown_backend(pg)
     _unregister_process_group(pg.group_name)

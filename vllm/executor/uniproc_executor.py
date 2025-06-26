@@ -3,8 +3,8 @@
 import os
 from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 
-import torch
-import torch.distributed as dist
+from vllm.frameworks import current_framework
+import vllm.frameworks.distributed as dist
 
 import vllm.envs as envs
 from vllm.executor.executor_base import ExecutorBase
@@ -134,8 +134,8 @@ class ExecutorWithExternalLauncher(UniProcExecutor):
         a, b = super().determine_num_available_blocks()
         from vllm.distributed.parallel_state import get_world_group
         cpu_group = get_world_group().cpu_group
-        a_tensor = torch.tensor([a], device="cpu", dtype=torch.int64)
-        b_tensor = torch.tensor([b], device="cpu", dtype=torch.int64)
+        a_tensor = current_framework.tensor([a], device="cpu", dtype=current_framework.int64)
+        b_tensor = current_framework.tensor([b], device="cpu", dtype=current_framework.int64)
         dist.all_reduce(a_tensor, group=cpu_group, op=dist.ReduceOp.MIN)
         dist.all_reduce(b_tensor, group=cpu_group, op=dist.ReduceOp.MIN)
         return a_tensor.item(), b_tensor.item()

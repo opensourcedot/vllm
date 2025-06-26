@@ -20,9 +20,9 @@ from typing import (Any, Callable, Dict, Generator, Iterable, List, Optional,
 import gguf
 import huggingface_hub
 import numpy as np
-import torch
+from vllm.frameworks import current_framework
 from huggingface_hub import HfApi
-from torch import nn
+from vllm.frameworks import nn
 from transformers import AutoModelForCausalLM
 from transformers.utils import SAFE_WEIGHTS_INDEX_NAME
 
@@ -62,14 +62,14 @@ from vllm.utils import is_pin_memory_available
 
 
 @contextmanager
-def device_loading_context(module: torch.nn.Module,
-                           target_device: torch.device):
+def device_loading_context(module: current_framework.nn.Module,
+                           target_device: current_framework.device):
     if target_device.type == "cpu":
         # If target is CPU, no need to move anything
         yield module
         return
 
-    original_device_states: Dict[str, torch.device] = {}
+    original_device_states: Dict[str, current_framework.device] = {}
 
     # Store original device states and move parameters to GPU if they're on CPU
     for name, p in module.named_parameters():
@@ -86,10 +86,10 @@ def device_loading_context(module: torch.nn.Module,
         pin_memory = is_pin_memory_available()
         for name, p in module.named_parameters():
             if name in original_device_states:
-                original_device: torch.device = original_device_states[name]
+                original_device: current_framework.device = original_device_states[name]
                 if original_device.type == "cpu":
-                    # `torch.empty_like` does not support `pin_memory` argument
-                    cpu_data = torch.empty_strided(
+                    # `current_framework.empty_like` does not support `pin_memory` argument
+                    cpu_data = current_framework.empty_strided(
                         size=p.data.size(),
                         stride=p.data.stride(),
                         dtype=p.data.dtype,
@@ -156,7 +156,7 @@ def _initialize_model(
 
 
 def _process_weights_after_loading(model: nn.Module, model_config: ModelConfig,
-                                   target_device: torch.device) -> None:
+                                   target_device: current_framework.device) -> None:
     for _, module in model.named_modules():
         quant_method = getattr(module, "quant_method", None)
         if isinstance(quant_method, QuantizeMethodBase):
@@ -343,7 +343,7 @@ class DefaultModelLoader(BaseModelLoader):
 
     def _get_weights_iterator(
             self, source: "Source"
-    ) -> Generator[Tuple[str, torch.Tensor], None, None]:
+    ) -> Generator[Tuple[str, current_framework.Tensor], None, None]:
         """Get an iterator for the model weights based on the load format."""
         hf_folder, hf_weights_files, use_safetensors = self._prepare_weights(
             source.model_or_path, source.revision, source.fall_back_to_pt,
@@ -388,7 +388,7 @@ class DefaultModelLoader(BaseModelLoader):
             weights_iterator = _xla_weights_iterator(weights_iterator)
 
         elif current_platform.is_hpu():
-            import habana_frameworks.torch.core as htcore
+            import habana_frameworks.current_framework.core as htcore
 
             def _hpu_weights_iterator(iterator: Generator):
                 for weights in iterator:
@@ -407,7 +407,7 @@ class DefaultModelLoader(BaseModelLoader):
         self,
         model_config: ModelConfig,
         model: nn.Module,
-    ) -> Generator[Tuple[str, torch.Tensor], None, None]:
+    ) -> Generator[Tuple[str, current_framework.Tensor], None, None]:
         primary_weights = DefaultModelLoader.Source(
             model_config.model,
             model_config.revision,
@@ -435,7 +435,7 @@ class DefaultModelLoader(BaseModelLoader):
     def load_model(self, vllm_config: VllmConfig) -> nn.Module:
         device_config = vllm_config.device_config
         model_config = vllm_config.model_config
-        target_device = torch.device(device_config.device)
+        target_device = current_framework.device(device_config.device)
         with set_default_torch_dtype(model_config.dtype):
             with target_device:
                 model = _initialize_model(vllm_config=vllm_config)
@@ -477,7 +477,7 @@ class DummyModelLoader(BaseModelLoader):
     def load_model(self, vllm_config: VllmConfig) -> nn.Module:
         device_config = vllm_config.device_config
         model_config = vllm_config.model_config
-        target_device = torch.device(device_config.device)
+        target_device = current_framework.device(device_config.device)
         with set_default_torch_dtype(model_config.dtype):
             with target_device:
                 model = _initialize_model(vllm_config=vllm_config)
@@ -506,7 +506,7 @@ class TensorizerLoader(BaseModelLoader):
         self.tensorizer_config.verify_with_parallel_config(parallel_config)
 
     def _get_weights_iterator(
-        self, ) -> Generator[Tuple[str, torch.Tensor], None, None]:
+        self, ) -> Generator[Tuple[str, current_framework.Tensor], None, None]:
         tensorizer_args = self.tensorizer_config._construct_tensorizer_args()
         return tensorizer_weights_iterator(tensorizer_args)
 
@@ -524,7 +524,7 @@ class TensorizerLoader(BaseModelLoader):
         device_config = vllm_config.device_config
         model_config = vllm_config.model_config
         with set_default_torch_dtype(model_config.dtype):
-            with torch.device(device_config.device):
+            with current_framework.device(device_config.device):
                 model = _initialize_model(vllm_config=vllm_config)
 
             model.load_weights(self._get_weights_iterator())
@@ -544,7 +544,7 @@ class TensorizerLoader(BaseModelLoader):
         model_config = vllm_config.model_config
 
         with set_default_torch_dtype(model_config.dtype):
-            with torch.device(device_config.device):
+            with current_framework.device(device_config.device):
                 model_class = get_model_architecture(model_config)[0]
 
                 tensorizer_config = copy.copy(self.tensorizer_config)
@@ -580,7 +580,7 @@ class TensorizerLoader(BaseModelLoader):
 
     @staticmethod
     def save_model(
-        model: torch.nn.Module,
+        model: current_framework.nn.Module,
         tensorizer_config: TensorizerConfig,
     ) -> None:
         serialize_vllm_model(
@@ -612,22 +612,22 @@ class ShardedStateLoader(BaseModelLoader):
 
     @staticmethod
     def _filter_subtensors(
-        tensors: Dict[str, torch.Tensor], ) -> Dict[str, torch.Tensor]:
+        tensors: Dict[str, current_framework.Tensor], ) -> Dict[str, current_framework.Tensor]:
         """
         Filter out all tensors that share the same memory or a subset of the
         memory of another tensor.
         """
-        same_storage_groups: Dict[Any, List[Tuple[str, torch.Tensor]]] = (
+        same_storage_groups: Dict[Any, List[Tuple[str, current_framework.Tensor]]] = (
             collections.defaultdict(list))
         for key, tensor in tensors.items():
             if tensor.numel():
                 ptr = tensor.untyped_storage().data_ptr()
                 same_storage_groups[tensor.device, ptr].append((key, tensor))
 
-        def get_end_ptr(tensor: torch.Tensor) -> int:
+        def get_end_ptr(tensor: current_framework.Tensor) -> int:
             return tensor.view(-1)[-1].data_ptr() + tensor.element_size()
 
-        result: Dict[str, torch.Tensor] = {}
+        result: Dict[str, current_framework.Tensor] = {}
         for group in same_storage_groups.values():
             for k, t in group:
                 a, b = t.data_ptr(), get_end_ptr(t)
@@ -666,8 +666,8 @@ class ShardedStateLoader(BaseModelLoader):
     def load_model(self, vllm_config: VllmConfig) -> nn.Module:
         device_config = vllm_config.device_config
         model_config = vllm_config.model_config
-        target_device = torch.device(device_config.device)
-        from safetensors.torch import safe_open
+        target_device = current_framework.device(device_config.device)
+        from safetensors.current_framework import safe_open
 
         from vllm.distributed import get_tensor_model_parallel_rank
 
@@ -720,12 +720,12 @@ class ShardedStateLoader(BaseModelLoader):
 
     @staticmethod
     def save_model(
-        model: torch.nn.Module,
+        model: current_framework.nn.Module,
         path: str,
         pattern: Optional[str] = None,
         max_size: Optional[int] = None,
     ) -> None:
-        from safetensors.torch import save_file
+        from safetensors.current_framework import save_file
 
         from vllm.distributed import get_tensor_model_parallel_rank
 
@@ -735,7 +735,7 @@ class ShardedStateLoader(BaseModelLoader):
         part_idx = 0
         total_size = 0
         state_dict = ShardedStateLoader._filter_subtensors(model.state_dict())
-        state_dict_part: Dict[str, torch.Tensor] = {}
+        state_dict_part: Dict[str, current_framework.Tensor] = {}
         for key, tensor in state_dict.items():
             param_size = tensor.nelement() * tensor.element_size()
             if max_size is not None and total_size + param_size > max_size:
@@ -871,7 +871,7 @@ class BitsAndBytesModelLoader(BaseModelLoader):
         revision: Optional[str],
         pre_quant: bool,
         load_8bit: bool,
-    ) -> Tuple[Generator[Tuple[str, torch.Tensor], None, None], Dict[str,
+    ) -> Tuple[Generator[Tuple[str, current_framework.Tensor], None, None], Dict[str,
                                                                      Any]]:
         """Get an iterator to the model weights with bitsandbytes quantization,
         as well as the quantization state dictionary."""
@@ -1058,7 +1058,7 @@ class BitsAndBytesModelLoader(BaseModelLoader):
                         weight_tensor[start_index:end_index, ...]
                         for start_index, end_index in shard_weights_index
                     ]
-                    weight_sub_tensor = torch.cat(weight_tensor, dim=0)
+                    weight_sub_tensor = current_framework.cat(weight_tensor, dim=0)
                 # Shard by row
                 else:
                     total_size = weight_tensor.size(0)
@@ -1078,7 +1078,7 @@ class BitsAndBytesModelLoader(BaseModelLoader):
                 if loaded_weight.is_contiguous() is False:
                     loaded_weight = loaded_weight.contiguous()
 
-                with set_default_torch_dtype(torch.float32):
+                with set_default_torch_dtype(current_framework.float32):
                     processed_weight, quant_state = quantize_4bit(
                         loaded_weight,
                         compress_statistics=True,
@@ -1193,7 +1193,7 @@ class BitsAndBytesModelLoader(BaseModelLoader):
                 raise ValueError("Following weights were not initialized from "
                                  f"checkpoint: {weights_not_loaded}")
 
-        torch.cuda.empty_cache()
+        current_framework.cuda.empty_cache()
 
         param_dict = dict(model.named_parameters())
         stacked_quant_state_dict: Dict[str, Dict[int, Any]] = {}
@@ -1259,8 +1259,8 @@ class BitsAndBytesModelLoader(BaseModelLoader):
                                          pack_ratio)
 
                 offsets = np.concatenate(([0], np.cumsum(num_elements)))
-                # Make torch infer_schema happy
-                offsets = torch.tensor(offsets).cpu()
+                # Make current_framework infer_schema happy
+                offsets = current_framework.tensor(offsets).cpu()
                 set_weight_attrs(param, {"bnb_shard_offsets": offsets})
 
                 if load_8bit:
@@ -1274,7 +1274,7 @@ class BitsAndBytesModelLoader(BaseModelLoader):
         device_config = vllm_config.device_config
         model_config = vllm_config.model_config
         with set_default_torch_dtype(model_config.dtype):
-            with torch.device(device_config.device):
+            with current_framework.device(device_config.device):
                 model = _initialize_model(vllm_config=vllm_config)
 
                 self._load_weights(model_config, model)
@@ -1339,7 +1339,7 @@ class GGUFModelLoader(BaseModelLoader):
             raise RuntimeError(f"Unknown gguf model_type: {model_type}")
         num_layers = config.num_hidden_layers
         name_map = gguf.get_tensor_name_map(arch, num_layers)
-        with torch.device("meta"):
+        with current_framework.device("meta"):
             dummy_model = AutoModelForCausalLM.from_config(
                 config, trust_remote_code=model_config.trust_remote_code)
         state_dict = dummy_model.state_dict()
@@ -1352,7 +1352,7 @@ class GGUFModelLoader(BaseModelLoader):
 
     def _get_weights_iterator(
         self, model_name_or_path: str, gguf_to_hf_name_map: Dict[str, str]
-    ) -> Generator[Tuple[str, torch.Tensor], None, None]:
+    ) -> Generator[Tuple[str, current_framework.Tensor], None, None]:
         return gguf_quant_weights_iterator(model_name_or_path,
                                            gguf_to_hf_name_map)
 
@@ -1369,7 +1369,7 @@ class GGUFModelLoader(BaseModelLoader):
                 local_model_path, gguf_weights_map):
             model_config.hf_config.update({"tie_word_embeddings": True})
 
-        target_device = torch.device(device_config.device)
+        target_device = current_framework.device(device_config.device)
         with set_default_torch_dtype(model_config.dtype):
             with target_device:
                 model = _initialize_model(vllm_config=vllm_config)
@@ -1448,7 +1448,7 @@ class RunaiModelStreamerLoader(BaseModelLoader):
 
     def _get_weights_iterator(
             self, model_or_path: str,
-            revision: str) -> Generator[Tuple[str, torch.Tensor], None, None]:
+            revision: str) -> Generator[Tuple[str, current_framework.Tensor], None, None]:
         """Get an iterator for the model weights based on the load format."""
         hf_weights_files = self._prepare_weights(model_or_path, revision)
         return runai_safetensors_weights_iterator(
@@ -1465,7 +1465,7 @@ class RunaiModelStreamerLoader(BaseModelLoader):
         device_config = vllm_config.device_config
         model_config = vllm_config.model_config
 
-        target_device = torch.device(device_config.device)
+        target_device = current_framework.device(device_config.device)
         with set_default_torch_dtype(model_config.dtype):
             with target_device:
                 model = _initialize_model(vllm_config=vllm_config)

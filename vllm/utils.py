@@ -48,13 +48,12 @@ import cloudpickle
 import numpy as np
 import numpy.typing as npt
 import psutil
-import torch
-import torch.types
+from vllm.frameworks import current_framework
 import yaml
 import zmq
 import zmq.asyncio
 from packaging.version import Version
-from torch.library import Library
+from vllm.frameworks.library import Library
 from typing_extensions import Never, ParamSpec, TypeIs, assert_never
 
 import vllm.envs as envs
@@ -151,22 +150,22 @@ GiB_bytes = 1 << 30
 """The number of bytes in one gibibyte (GiB)."""
 
 STR_DTYPE_TO_TORCH_DTYPE = {
-    "half": torch.half,
-    "bfloat16": torch.bfloat16,
-    "float": torch.float,
-    "fp8": torch.uint8,
-    "fp8_e4m3": torch.uint8,
-    "fp8_e5m2": torch.uint8,
-    "int8": torch.int8,
+    "half": current_framework.half,
+    "bfloat16": current_framework.bfloat16,
+    "float": current_framework.float,
+    "fp8": current_framework.uint8,
+    "fp8_e4m3": current_framework.uint8,
+    "fp8_e5m2": current_framework.uint8,
+    "int8": current_framework.int8,
 }
 
 TORCH_DTYPE_TO_NUMPY_DTYPE = {
-    torch.float16: np.float16,
-    torch.float32: np.float32,
-    torch.float64: np.float64,
-    torch.uint8: np.uint8,
-    torch.int32: np.int32,
-    torch.int64: np.int64,
+    current_framework.float16: np.float16,
+    current_framework.float32: np.float32,
+    current_framework.float64: np.float64,
+    current_framework.uint8: np.uint8,
+    current_framework.int32: np.int32,
+    current_framework.int64: np.int64,
 }
 
 P = ParamSpec('P')
@@ -654,12 +653,12 @@ def round_down(x: int, y: int) -> int:
 
 
 def _generate_random_fp8(
-    tensor: torch.Tensor,
+    tensor: current_framework.Tensor,
     low: float,
     high: float,
 ) -> None:
     # NOTE(zhaoyang): Due to NaN and Inf representation for fp8 data type,
-    # it may occur Inf or NaN if we directly use torch.randint
+    # it may occur Inf or NaN if we directly use current_framework.randint
     # to generate random data for fp8 data.
     # For example, s.11111.00 in fp8e5m2 format represents Inf.
     #     | E4M3        | E5M2
@@ -667,34 +666,34 @@ def _generate_random_fp8(
     # Inf | N/A         | s.11111.00
     # NaN | s.1111.111  | s.11111.{01,10,11}
     from vllm import _custom_ops as ops
-    tensor_tmp = torch.empty_like(tensor, dtype=torch.float16)
+    tensor_tmp = current_framework.empty_like(tensor, dtype=current_framework.float16)
     tensor_tmp.uniform_(low, high)
     ops.convert_fp8(tensor, tensor_tmp)
     del tensor_tmp
 
 
-def get_kv_cache_torch_dtype(
-        cache_dtype: Optional[Union[str, torch.dtype]],
-        model_dtype: Optional[Union[str, torch.dtype]] = None) -> torch.dtype:
+def get_kv_cache_current_framework_dtype(
+        cache_dtype: Optional[Union[str, current_framework.dtype]],
+        model_dtype: Optional[Union[str, current_framework.dtype]] = None) -> current_framework.dtype:
     if isinstance(cache_dtype, str):
         if cache_dtype == "auto":
             if isinstance(model_dtype, str):
-                torch_dtype = STR_DTYPE_TO_TORCH_DTYPE[model_dtype]
-            elif isinstance(model_dtype, torch.dtype):
-                torch_dtype = model_dtype
+                current_framework_dtype = STR_DTYPE_TO_TORCH_DTYPE[model_dtype]
+            elif isinstance(model_dtype, current_framework.dtype):
+                current_framework_dtype = model_dtype
             else:
                 raise ValueError(f"Invalid model dtype: {model_dtype}")
         elif cache_dtype in ["half", "bfloat16", "float"]:
-            torch_dtype = STR_DTYPE_TO_TORCH_DTYPE[cache_dtype]
+            current_framework_dtype = STR_DTYPE_TO_TORCH_DTYPE[cache_dtype]
         elif cache_dtype == "fp8":
-            torch_dtype = torch.uint8
+            current_framework_dtype = current_framework.uint8
         else:
             raise ValueError(f"Invalid kv cache dtype: {cache_dtype}")
-    elif isinstance(cache_dtype, torch.dtype):
-        torch_dtype = cache_dtype
+    elif isinstance(cache_dtype, current_framework.dtype):
+        current_framework_dtype = cache_dtype
     else:
         raise ValueError(f"Invalid kv cache dtype: {cache_dtype}")
-    return torch_dtype
+    return current_framework_dtype
 
 
 def create_kv_caches_with_random_flash(
@@ -703,24 +702,24 @@ def create_kv_caches_with_random_flash(
     num_layers: int,
     num_heads: int,
     head_size: int,
-    cache_dtype: Optional[Union[str, torch.dtype]],
-    model_dtype: Optional[Union[str, torch.dtype]] = None,
+    cache_dtype: Optional[Union[str, current_framework.dtype]],
+    model_dtype: Optional[Union[str, current_framework.dtype]] = None,
     seed: Optional[int] = None,
     device: Optional[str] = "cuda",
-) -> tuple[list[torch.Tensor], list[torch.Tensor]]:
+) -> tuple[list[current_framework.Tensor], list[current_framework.Tensor]]:
     from vllm.platforms import current_platform
     current_platform.seed_everything(seed)
 
-    torch_dtype = get_kv_cache_torch_dtype(cache_dtype, model_dtype)
+    current_framework_dtype = get_kv_cache_current_framework_dtype(cache_dtype, model_dtype)
     key_value_cache_shape = (num_blocks, 2, block_size, num_heads, head_size)
     scale = head_size**-0.5
 
-    key_caches: list[torch.Tensor] = []
-    value_caches: list[torch.Tensor] = []
+    key_caches: list[current_framework.Tensor] = []
+    value_caches: list[current_framework.Tensor] = []
 
     for _ in range(num_layers):
-        key_value_cache = torch.empty(size=key_value_cache_shape,
-                                      dtype=torch_dtype,
+        key_value_cache = current_framework.empty(size=key_value_cache_shape,
+                                      dtype=current_framework_dtype,
                                       device=device)
         if cache_dtype in ["auto", "half", "bfloat16", "float"]:
             key_value_cache.uniform_(-scale, scale)
@@ -740,11 +739,11 @@ def create_kv_caches_with_random(
     num_layers: int,
     num_heads: int,
     head_size: int,
-    cache_dtype: Optional[Union[str, torch.dtype]],
-    model_dtype: Optional[Union[str, torch.dtype]] = None,
+    cache_dtype: Optional[Union[str, current_framework.dtype]],
+    model_dtype: Optional[Union[str, current_framework.dtype]] = None,
     seed: Optional[int] = None,
     device: Optional[str] = "cuda",
-) -> tuple[list[torch.Tensor], list[torch.Tensor]]:
+) -> tuple[list[current_framework.Tensor], list[current_framework.Tensor]]:
 
     if cache_dtype == "fp8" and head_size % 16:
         raise ValueError(
@@ -753,15 +752,15 @@ def create_kv_caches_with_random(
     from vllm.platforms import current_platform
     current_platform.seed_everything(seed)
 
-    torch_dtype = get_kv_cache_torch_dtype(cache_dtype, model_dtype)
+    current_framework_dtype = get_kv_cache_current_framework_dtype(cache_dtype, model_dtype)
 
     scale = head_size**-0.5
-    x = 16 // torch.tensor([], dtype=torch_dtype).element_size()
+    x = 16 // current_framework.tensor([], dtype=current_framework_dtype).element_size()
     key_cache_shape = (num_blocks, num_heads, head_size // x, block_size, x)
-    key_caches: list[torch.Tensor] = []
+    key_caches: list[current_framework.Tensor] = []
     for _ in range(num_layers):
-        key_cache = torch.empty(size=key_cache_shape,
-                                dtype=torch_dtype,
+        key_cache = current_framework.empty(size=key_cache_shape,
+                                dtype=current_framework_dtype,
                                 device=device)
         if cache_dtype in ["auto", "half", "bfloat16", "float"]:
             key_cache.uniform_(-scale, scale)
@@ -773,10 +772,10 @@ def create_kv_caches_with_random(
         key_caches.append(key_cache)
 
     value_cache_shape = (num_blocks, num_heads, head_size, block_size)
-    value_caches: list[torch.Tensor] = []
+    value_caches: list[current_framework.Tensor] = []
     for _ in range(num_layers):
-        value_cache = torch.empty(size=value_cache_shape,
-                                  dtype=torch_dtype,
+        value_cache = current_framework.empty(size=value_cache_shape,
+                                  dtype=current_framework_dtype,
                                   device=device)
         if cache_dtype in ["auto", "half", "bfloat16", "float"]:
             value_cache.uniform_(-scale, scale)
@@ -805,7 +804,7 @@ def is_uva_available() -> bool:
 
 class DeviceMemoryProfiler:
 
-    def __init__(self, device: Optional[torch.types.Device] = None):
+    def __init__(self, device: Optional[current_framework.types.Device] = None):
         self.device = device
 
     def current_memory_usage(self) -> float:
@@ -854,12 +853,12 @@ def make_ndarray_with_pad(
 def make_tensor_with_pad(
     x: list[list[T]],
     pad: T,
-    dtype: torch.dtype,
+    dtype: current_framework.dtype,
     *,
     max_len: Optional[int] = None,
-    device: Optional[Union[str, torch.device]] = None,
+    device: Optional[Union[str, current_framework.device]] = None,
     pin_memory: bool = False,
-) -> torch.Tensor:
+) -> current_framework.Tensor:
     """
     Make a padded tensor from 2D inputs.
 
@@ -869,7 +868,7 @@ def make_tensor_with_pad(
     np_dtype = TORCH_DTYPE_TO_NUMPY_DTYPE[dtype]
     padded_x = make_ndarray_with_pad(x, pad, np_dtype, max_len=max_len)
 
-    tensor = torch.from_numpy(padded_x).to(device)
+    tensor = current_framework.from_numpy(padded_x).to(device)
     if pin_memory:
         tensor = tensor.pin_memory()
 
@@ -878,18 +877,18 @@ def make_tensor_with_pad(
 
 def async_tensor_h2d(
     data: list,
-    dtype: torch.dtype,
-    target_device: Union[str, torch.device],
+    dtype: current_framework.dtype,
+    target_device: Union[str, current_framework.device],
     pin_memory: bool,
-) -> torch.Tensor:
+) -> current_framework.Tensor:
     """Asynchronously create a tensor and copy it from host to device."""
-    t = torch.tensor(data, dtype=dtype, pin_memory=pin_memory, device="cpu")
+    t = current_framework.tensor(data, dtype=dtype, pin_memory=pin_memory, device="cpu")
     return t.to(device=target_device, non_blocking=True)
 
 
-def get_dtype_size(dtype: torch.dtype) -> int:
+def get_dtype_size(dtype: current_framework.dtype) -> int:
     """Get the size of the data type in bytes."""
-    return torch.tensor([], dtype=dtype).element_size()
+    return current_framework.tensor([], dtype=dtype).element_size()
 
 
 # `collections` helpers
@@ -970,7 +969,7 @@ def find_nccl_library() -> str:
     """
     We either use the library file specified by the `VLLM_NCCL_SO_PATH`
     environment variable, or we find the library file brought by PyTorch.
-    After importing `torch`, `libnccl.so.2` or `librccl.so.1` can be
+    After importing `current_framework`, `libnccl.so.2` or `librccl.so.1` can be
     found by `ctypes` automatically.
     """
     so_file = envs.VLLM_NCCL_SO_PATH
@@ -981,9 +980,9 @@ def find_nccl_library() -> str:
             "Found nccl from environment variable VLLM_NCCL_SO_PATH=%s",
             so_file)
     else:
-        if torch.version.cuda is not None:
+        if current_framework.version.cuda is not None:
             so_file = "libnccl.so.2"
-        elif torch.version.hip is not None:
+        elif current_framework.version.hip is not None:
             so_file = "librccl.so.1"
         else:
             raise ValueError("NCCL only supports CUDA and ROCm backends.")
@@ -991,29 +990,29 @@ def find_nccl_library() -> str:
     return so_file
 
 
-prev_set_stream = torch.cuda.set_stream
+prev_set_stream = current_framework.cuda.set_stream
 
 _current_stream = None
 
 
-def _patched_set_stream(stream: torch.cuda.Stream) -> None:
+def _patched_set_stream(stream: current_framework.cuda.Stream) -> None:
     global _current_stream
     _current_stream = stream
     prev_set_stream(stream)
 
 
-torch.cuda.set_stream = _patched_set_stream
+current_framework.cuda.set_stream = _patched_set_stream
 
 
-def current_stream() -> torch.cuda.Stream:
+def current_stream() -> current_framework.cuda.Stream:
     """
-    replace `torch.cuda.current_stream()` with `vllm.utils.current_stream()`.
-    it turns out that `torch.cuda.current_stream()` is quite expensive,
+    replace `current_framework.cuda.current_stream()` with `vllm.utils.current_stream()`.
+    it turns out that `current_framework.cuda.current_stream()` is quite expensive,
     as it will construct a new stream object at each call.
-    here we patch `torch.cuda.set_stream` to keep track of the current stream
-    directly, so that we can avoid calling `torch.cuda.current_stream()`.
+    here we patch `current_framework.cuda.set_stream` to keep track of the current stream
+    directly, so that we can avoid calling `current_framework.cuda.current_stream()`.
 
-    the underlying hypothesis is that we do not call `torch._C._cuda_setStream`
+    the underlying hypothesis is that we do not call `current_framework._C._cuda_setStream`
     from C/C++ code.
     """
     from vllm.platforms import current_platform
@@ -1024,8 +1023,8 @@ def current_stream() -> torch.cuda.Stream:
         # On ROCm using the default 0 stream in combination with RCCL
         # is hurting performance. Therefore creating a dedicated stream
         # per process
-        _current_stream = torch.cuda.Stream() if current_platform.is_rocm(
-        ) else torch.cuda.current_stream()
+        _current_stream = current_framework.cuda.Stream() if current_platform.is_rocm(
+        ) else current_framework.cuda.current_stream()
     return _current_stream
 
 
@@ -1142,23 +1141,23 @@ def _cuda_device_count_stateless(
     # LRU Cache purposes.
 
     # Code below is based on
-    # https://github.com/pytorch/pytorch/blob/
+    # https://github.com/pycurrent_framework/pycurrent_framework/blob/
     # c1cd946818442aca8c7f812b16d187ce1586c3bc/
-    # torch/cuda/__init__.py#L831C1-L831C17
-    import torch.cuda
-    import torch.version
+    # current_framework/cuda/__init__.py#L831C1-L831C17
+    import current_framework.cuda
+    import current_framework.version
 
     from vllm.platforms import current_platform
-    if not torch.cuda._is_compiled():
+    if not current_framework.cuda._is_compiled():
         return 0
     if current_platform.is_rocm():
         # ROCm uses amdsmi instead of nvml for stateless device count
         # This requires a sufficiently modern version of Torch 2.4.0
-        raw_count = torch.cuda._device_count_amdsmi() if (hasattr(
-            torch.cuda, "_device_count_amdsmi")) else -1
+        raw_count = current_framework.cuda._device_count_amdsmi() if (hasattr(
+            current_framework.cuda, "_device_count_amdsmi")) else -1
     else:
-        raw_count = torch.cuda._device_count_nvml()
-    r = torch._C._cuda_getDeviceCount() if raw_count < 0 else raw_count
+        raw_count = current_framework.cuda._device_count_nvml()
+    r = current_framework._C._cuda_getDeviceCount() if raw_count < 0 else raw_count
     return r
 
 
@@ -1166,20 +1165,20 @@ def cuda_device_count_stateless() -> int:
     """Get number of CUDA devices, caching based on the value of
     CUDA_VISIBLE_DEVICES at the time of call.
 
-    This should be used instead of torch.cuda.device_count()
+    This should be used instead of current_framework.cuda.device_count()
     unless CUDA_VISIBLE_DEVICES has already been set to the desired
     value."""
 
-    # This can be removed and simply replaced with torch.cuda.get_device_count
-    # after https://github.com/pytorch/pytorch/pull/122815 is released.
+    # This can be removed and simply replaced with current_framework.cuda.get_device_count
+    # after https://github.com/pycurrent_framework/pycurrent_framework/pull/122815 is released.
     return _cuda_device_count_stateless(envs.CUDA_VISIBLE_DEVICES)
 
 
 def cuda_is_initialized() -> bool:
     """Check if CUDA is initialized."""
-    if not torch.cuda._is_compiled():
+    if not current_framework.cuda._is_compiled():
         return False
-    return torch.cuda.is_initialized()
+    return current_framework.cuda.is_initialized()
 
 
 def weak_bind(bound_method: Callable[..., Any], ) -> Callable[..., None]:
@@ -1562,14 +1561,17 @@ def get_allowed_kwarg_only_overrides(
 # In particular, the FakeScalarType is not supported for earlier versions of
 # PyTorch which breaks dynamo for any ops registered using ScalarType.
 def supports_dynamo() -> bool:
-    base_torch_version = Version(Version(torch.__version__).base_version)
-    return base_torch_version >= Version("2.4.0")
+    base_current_framework_version = Version(Version(current_framework.__version__).base_version)
+    return base_current_framework_version >= Version("2.4.0")
 
 
-# Some backends use pytorch version < 2.4.0 which doesn't
-# support `torch.library.custom_op`.
+# Some backends use pycurrent_framework version < 2.4.0 which doesn't
+# support `current_framework.library.custom_op`.
 def supports_custom_op() -> bool:
-    return hasattr(torch.library, "custom_op")
+    from vllm.frameworks import current_framework
+    if current_framework is not current_framework:
+        return False
+    return hasattr(current_framework.library, "custom_op")
 
 
 class AtomicCounter:
@@ -1649,20 +1651,20 @@ def weak_ref_tensor(tensor: Any) -> Any:
     The new tensor will share the same data as the original tensor,
     but will not keep the original tensor alive.
     """
-    if isinstance(tensor, torch.Tensor):
-        return torch.ops._C.weak_ref_tensor(tensor)
+    if isinstance(tensor, current_framework.Tensor):
+        return current_framework.ops._C.weak_ref_tensor(tensor)
     else:
         return tensor
 
 
 def weak_ref_tensors(
-    tensors: Union[torch.Tensor, list[torch.Tensor], tuple[torch.Tensor]]
-) -> Union[torch.Tensor, list[Any], tuple[Any], Any]:
+    tensors: Union[current_framework.Tensor, list[current_framework.Tensor], tuple[current_framework.Tensor]]
+) -> Union[current_framework.Tensor, list[Any], tuple[Any], Any]:
     """
     Convenience function to create weak references to tensors,
     for single tensor, list of tensors or tuple of tensors.
     """
-    if isinstance(tensors, torch.Tensor):
+    if isinstance(tensors, current_framework.Tensor):
         return weak_ref_tensor(tensors)
     if isinstance(tensors, list):
         return [weak_ref_tensor(t) for t in tensors]
@@ -1671,18 +1673,18 @@ def weak_ref_tensors(
     raise ValueError("Invalid type for tensors")
 
 
-def get_cuda_view_from_cpu_tensor(cpu_tensor: torch.Tensor) -> torch.Tensor:
+def get_cuda_view_from_cpu_tensor(cpu_tensor: current_framework.Tensor) -> current_framework.Tensor:
     """
     Get a CUDA view of a CPU tensor using Unified Virtual Addressing (UVA).
     """
     assert cpu_tensor.is_pinned(), "CPU tensor must be pinned"
-    return torch.ops._C.get_cuda_view_from_cpu_tensor(cpu_tensor)
+    return current_framework.ops._C.get_cuda_view_from_cpu_tensor(cpu_tensor)
 
 
 def is_in_doc_build() -> bool:
     try:
         from sphinx.ext.autodoc.mock import _MockModule
-        return isinstance(torch, _MockModule)
+        return isinstance(current_framework, _MockModule)
     except ModuleNotFoundError:
         return False
 
@@ -1943,7 +1945,7 @@ def direct_register_custom_op(
     dispatch_key: str = "CUDA",
 ):
     """
-    `torch.library.custom_op` can have significant overhead because it
+    `current_framework.library.custom_op` can have significant overhead because it
     needs to consider complicated dispatching logic. This function
     directly registers a custom op and dispatches it to the CUDA backend.
     See https://gist.github.com/youkaichao/ecbea9ec9fc79a45d2adce1784d7a9a5
@@ -1957,15 +1959,16 @@ def direct_register_custom_op(
     library object. If you want to bind the operator to a different library,
     make sure the library object is alive when the operator is used.
     """
+    import torch
     if is_in_doc_build():
         return
 
     if not supports_custom_op():
         from vllm.platforms import current_platform
         assert not current_platform.is_cuda_alike(), (
-            "cuda platform needs torch>=2.4 to support custom op, "
-            "chances are you are using an old version of pytorch "
-            "or a custom build of pytorch. It is recommended to "
+            "cuda platform needs current_framework>=2.4 to support custom op, "
+            "chances are you are using an old version of pycurrent_framework "
+            "or a custom build of pycurrent_framework. It is recommended to "
             "use vLLM in a fresh new environment and let it install "
             "the required dependencies.")
         return
@@ -1975,7 +1978,7 @@ def direct_register_custom_op(
         schema_str = torch.library.infer_schema(op_func,
                                                 mutates_args=mutates_args)
     else:
-        # for pytorch 2.4
+        # for pycurrent_framework 2.4
         import torch._custom_op.impl
         schema_str = torch._custom_op.impl.infer_schema(op_func, mutates_args)
     my_lib = target_lib or vllm_lib
@@ -2022,10 +2025,10 @@ def kill_process_tree(pid: int):
 @dataclass
 class MemorySnapshot:
     """Memory snapshot."""
-    torch_peak: int = 0
+    current_framework_peak: int = 0
     cuda_memory: int = 0
-    torch_memory: int = 0
-    non_torch_memory: int = 0
+    current_framework_memory: int = 0
+    non_current_framework_memory: int = 0
     timestamp: float = 0.0
     auto_measure: bool = True
 
@@ -2034,31 +2037,31 @@ class MemorySnapshot:
             self.measure()
 
     def measure(self):
-        # we measure the torch peak memory usage via allocated_bytes,
-        # rather than `torch.cuda.memory_reserved()` .
-        # After `torch.cuda.reset_peak_memory_stats()`,
-        # `torch.cuda.memory_reserved()` will keep growing, and only shrink
-        # when we call `torch.cuda.empty_cache()` or OOM happens.
-        self.torch_peak = torch.cuda.memory_stats().get(
+        # we measure the current_framework peak memory usage via allocated_bytes,
+        # rather than `current_framework.cuda.memory_reserved()` .
+        # After `current_framework.cuda.reset_peak_memory_stats()`,
+        # `current_framework.cuda.memory_reserved()` will keep growing, and only shrink
+        # when we call `current_framework.cuda.empty_cache()` or OOM happens.
+        self.current_framework_peak = current_framework.cuda.memory_stats().get(
             "allocated_bytes.all.peak", 0)
 
-        self.cuda_memory = torch.cuda.mem_get_info(
-        )[1] - torch.cuda.mem_get_info()[0]
+        self.cuda_memory = current_framework.cuda.mem_get_info(
+        )[1] - current_framework.cuda.mem_get_info()[0]
 
-        # torch.cuda.memory_reserved() is how many bytes
+        # current_framework.cuda.memory_reserved() is how many bytes
         # PyTorch gets from cuda (by calling cudaMalloc, etc.)
-        # this is used to measure the non-torch memory usage
-        self.torch_memory = torch.cuda.memory_reserved()
+        # this is used to measure the non-current_framework memory usage
+        self.current_framework_memory = current_framework.cuda.memory_reserved()
 
-        self.non_torch_memory = self.cuda_memory - self.torch_memory
+        self.non_current_framework_memory = self.cuda_memory - self.current_framework_memory
         self.timestamp = time.time()
 
     def __sub__(self, other: MemorySnapshot) -> MemorySnapshot:
         return MemorySnapshot(
-            torch_peak=self.torch_peak - other.torch_peak,
+            current_framework_peak=self.current_framework_peak - other.current_framework_peak,
             cuda_memory=self.cuda_memory - other.cuda_memory,
-            torch_memory=self.torch_memory - other.torch_memory,
-            non_torch_memory=self.non_torch_memory - other.non_torch_memory,
+            current_framework_memory=self.current_framework_memory - other.current_framework_memory,
+            non_current_framework_memory=self.non_current_framework_memory - other.non_current_framework_memory,
             timestamp=self.timestamp - other.timestamp,
             auto_measure=False,
         )
@@ -2069,8 +2072,8 @@ class MemoryProfilingResult:
     """Memory profiling result. All numbers are in bytes.
     """
     non_kv_cache_memory: int = 0
-    torch_peak_increase: int = 0
-    non_torch_increase: int = 0
+    current_framework_peak_increase: int = 0
+    non_current_framework_increase: int = 0
     weights_memory: float = 0
     before_create: MemorySnapshot = field(default_factory=MemorySnapshot)
     before_profile: MemorySnapshot = field(default_factory=MemorySnapshot)
@@ -2091,8 +2094,8 @@ def memory_profiling(
 
     The memory in one GPU can be classified into 3 categories:
     1. memory used by anything other than the current vLLM instance.
-    2. memory used by torch in the current vLLM instance.
-    3. memory used in the current vLLM instance, but not by torch.
+    2. memory used by current_framework in the current vLLM instance.
+    3. memory used in the current vLLM instance, but not by current_framework.
 
     A quantitive example:
 
@@ -2120,17 +2123,17 @@ def memory_profiling(
     In this case, non-kv cache takes 5 GiB in total, including:
     a. 2 GiB used by the model weights (category 2)
     b. 2 GiB reserved for the peak activation tensors (category 2)
-    c. 1 GiB used by non-torch components (category 3)
+    c. 1 GiB used by non-current_framework components (category 3)
 
     The memory used for loading weights (a.) is directly given from the argument `weights_memory`.
 
-    The increase of `torch.cuda.memory_stats()["allocated_bytes.all.peak"]` during profiling gives (b.).
+    The increase of `current_framework.cuda.memory_stats()["allocated_bytes.all.peak"]` during profiling gives (b.).
 
-    The increase of `non_torch_memory` from creating the current vLLM instance until after profiling to get (c.).
+    The increase of `non_current_framework_memory` from creating the current vLLM instance until after profiling to get (c.).
     """ # noqa
     gc.collect()
-    torch.cuda.empty_cache()
-    torch.cuda.reset_peak_memory_stats()
+    current_framework.cuda.empty_cache()
+    current_framework.cuda.reset_peak_memory_stats()
 
     result = MemoryProfilingResult()
 
@@ -2143,16 +2146,16 @@ def memory_profiling(
     yield result
 
     gc.collect()
-    torch.cuda.empty_cache()
+    current_framework.cuda.empty_cache()
 
     result.after_profile.measure()
 
     diff_profile = result.after_profile - result.before_profile
     diff_from_create = result.after_profile - result.before_create
-    result.torch_peak_increase = diff_profile.torch_peak
-    result.non_torch_increase = diff_from_create.non_torch_memory
+    result.current_framework_peak_increase = diff_profile.current_framework_peak
+    result.non_current_framework_increase = diff_from_create.non_current_framework_memory
     result.profile_time = diff_profile.timestamp
-    result.non_kv_cache_memory = result.non_torch_increase + result.torch_peak_increase + result.weights_memory  # noqa
+    result.non_kv_cache_memory = result.non_current_framework_increase + result.current_framework_peak_increase + result.weights_memory  # noqa
 
 
 # Adapted from: https://github.com/sgl-project/sglang/blob/v0.4.1/python/sglang/srt/utils.py#L630 # noqa: E501
@@ -2293,7 +2296,7 @@ def get_mp_context():
 
 def bind_kv_cache(
         ctx: dict[str, Any],
-        kv_cache: list[list[torch.Tensor]],  # [virtual_engine][layer_index]
+        kv_cache: list[list[current_framework.Tensor]],  # [virtual_engine][layer_index]
 ) -> None:
     # Bind the kv_cache tensor to Attention modules, similar to
     # ctx[layer_name].kv_cache[ve]=kv_cache[ve][extract_layer_index(layer_name)]
@@ -2368,7 +2371,7 @@ def import_pynvml():
         named `pynvml_utils` to avoid the conflict.
     It is so confusing that many packages in the community use the
     unofficial one by mistake, and we have to handle this case.
-    For example, `nvcr.io/nvidia/pytorch:24.12-py3` uses the unofficial
+    For example, `nvcr.io/nvidia/pycurrent_framework:24.12-py3` uses the unofficial
     one, and it will cause errors, see the issue
     https://github.com/vllm-project/vllm/issues/12847 for example.
     After all the troubles, we decide to copy the official `pynvml`

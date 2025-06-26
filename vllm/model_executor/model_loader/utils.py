@@ -4,9 +4,9 @@ import contextlib
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple, Type
 
-import torch
+from vllm.frameworks import current_framework
 import transformers
-from torch import nn
+from vllm.frameworks import nn
 from transformers.dynamic_module_utils import get_class_from_dynamic_module
 
 from vllm.config import ModelConfig, ModelImpl
@@ -22,12 +22,12 @@ logger = init_logger(__name__)
 
 
 @contextlib.contextmanager
-def set_default_torch_dtype(dtype: torch.dtype):
-    """Sets the default torch dtype to the given dtype."""
-    old_dtype = torch.get_default_dtype()
-    torch.set_default_dtype(dtype)
+def set_default_torch_dtype(dtype: current_framework.dtype):
+    """Sets the default current_framework dtype to the given dtype."""
+    old_dtype = current_framework.get_default_dtype()
+    current_framework.set_default_dtype(dtype)
     yield
-    torch.set_default_dtype(old_dtype)
+    current_framework.set_default_dtype(old_dtype)
 
 
 def is_transformers_impl_compatible(

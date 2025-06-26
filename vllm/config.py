@@ -17,14 +17,14 @@ from pathlib import Path
 from typing import (TYPE_CHECKING, Any, Callable, ClassVar, Final, Literal,
                     Optional, Protocol, Union)
 
-import torch
 from packaging.version import Version
 from pydantic import BaseModel, Field, PrivateAttr
-from torch.distributed import ProcessGroup, ReduceOp
 from transformers import PretrainedConfig
 
 import vllm.envs as envs
 from vllm.compilation.inductor_pass import CallableInductorPass, InductorPass
+from vllm.frameworks import current_framework
+from vllm.frameworks.distributed import ProcessGroup, ReduceOp
 from vllm.logger import init_logger
 from vllm.model_executor.layers.quantization import (QUANTIZATION_METHODS,
                                                      get_quantization_config)
@@ -234,7 +234,7 @@ class ModelConfig:
         tokenizer: str,
         tokenizer_mode: str,
         trust_remote_code: bool,
-        dtype: Union[str, torch.dtype],
+        dtype: Union[str, current_framework.dtype],
         seed: int,
         hf_config_path: Optional[str] = None,
         allowed_local_media_path: str = "",
@@ -1158,7 +1158,7 @@ class CacheConfig:
         """
         factors: list[Any] = []
         factors.append(self.cache_dtype)
-        # `cpu_offload_gb` does not use `torch.compile` yet.
+        # `cpu_offload_gb` does not use `current_framework.compile` yet.
         hash_str = hashlib.md5(str(factors).encode(),
                                usedforsecurity=False).hexdigest()
         return hash_str
@@ -1511,14 +1511,14 @@ class ParallelConfig:
     @staticmethod
     def has_unfinished_dp(dp_group: "ProcessGroup",
                           has_unfinished: bool) -> bool:
-        tensor = torch.tensor([has_unfinished],
-                              dtype=torch.int32,
+        tensor = current_framework.tensor([has_unfinished],
+                              dtype=current_framework.int32,
                               device="cpu")
         # dp rank 0: has_unfinished_seqs=True
         # dp rank 1: has_unfinished_seqs=False
         # aggregated: has_unfinished_seqs=True
         # so this is an OR operation, i.e. MAX in integers
-        torch.distributed.all_reduce(tensor, op=ReduceOp.MAX, group=dp_group)
+        current_framework.distributed.all_reduce(tensor, op=ReduceOp.MAX, group=dp_group)
         aggregated_has_unfinished = bool(tensor.item())
         return aggregated_has_unfinished
 
@@ -1854,7 +1854,7 @@ class SchedulerConfig:
 
 
 class DeviceConfig:
-    device: Optional[torch.device]
+    device: Optional[current_framework.device]
     device_type: str
 
     def compute_hash(self) -> str:
@@ -1871,7 +1871,7 @@ class DeviceConfig:
         """
         # no factors to consider.
         # the device/platform information will be summarized
-        # by torch/vllm automatically.
+        # by current_framework/vllm automatically.
         factors: list[Any] = []
         hash_str = hashlib.md5(str(factors).encode(),
                                usedforsecurity=False).hexdigest()
@@ -1893,12 +1893,12 @@ class DeviceConfig:
 
         # Some device types require processing inputs on CPU
         if self.device_type in ["neuron"]:
-            self.device = torch.device("cpu")
+            self.device = current_framework.device("cpu")
         elif self.device_type in ["tpu"]:
             self.device = None
         else:
             # Set device with device type
-            self.device = torch.device(self.device_type)
+            self.device = current_framework.device(self.device_type)
 
 
 @dataclass
@@ -2048,7 +2048,7 @@ class SpeculativeConfig:
         the final hidden states.
         """
         # no factors to consider.
-        # spec decode does not use `torch.compile` yet.
+        # spec decode does not use `current_framework.compile` yet.
         factors: list[Any] = []
         hash_str = hashlib.md5(str(factors).encode(),
                                usedforsecurity=False).hexdigest()
@@ -2397,7 +2397,7 @@ class LoRAConfig:
     max_loras: int
     fully_sharded_loras: bool = False
     max_cpu_loras: Optional[int] = None
-    lora_dtype: Optional[Union[torch.dtype, str]] = None
+    lora_dtype: Optional[Union[current_framework.dtype, str]] = None
     lora_extra_vocab_size: int = 256
     # This is a constant.
     lora_vocab_padding_size: ClassVar[int] = 256
@@ -2459,7 +2459,7 @@ class LoRAConfig:
         if self.lora_dtype in (None, "auto"):
             self.lora_dtype = model_config.dtype
         elif isinstance(self.lora_dtype, str):
-            self.lora_dtype = getattr(torch, self.lora_dtype)
+            self.lora_dtype = getattr(current_framework, self.lora_dtype)
 
     def verify_with_scheduler_config(self, scheduler_config: SchedulerConfig):
         # Reminder: Please update docs/source/features/compatibility_matrix.md
@@ -2474,7 +2474,7 @@ class PromptAdapterConfig:
     max_prompt_adapters: int
     max_prompt_adapter_token: int
     max_cpu_prompt_adapters: Optional[int] = None
-    prompt_adapter_dtype: Optional[torch.dtype] = None
+    prompt_adapter_dtype: Optional[current_framework.dtype] = None
 
     def compute_hash(self) -> str:
         """
@@ -2509,7 +2509,7 @@ class PromptAdapterConfig:
         if self.prompt_adapter_dtype in (None, "auto"):
             self.prompt_adapter_dtype = model_config.dtype
         elif isinstance(self.prompt_adapter_dtype, str):
-            self.prompt_adapter_dtype = getattr(torch,
+            self.prompt_adapter_dtype = getattr(current_framework,
                                                 self.prompt_adapter_dtype)
 
 
@@ -2614,11 +2614,11 @@ class PoolerConfig:
 
 
 _STR_DTYPE_TO_TORCH_DTYPE = {
-    "half": torch.float16,
-    "float16": torch.float16,
-    "float": torch.float32,
-    "float32": torch.float32,
-    "bfloat16": torch.bfloat16,
+    "half": current_framework.float16,
+    "float16": current_framework.float16,
+    "float": current_framework.float32,
+    "float32": current_framework.float32,
+    "bfloat16": current_framework.bfloat16,
 }
 
 _ROCM_NOT_SUPPORTED_DTYPE: list[str] = []  #
@@ -2626,9 +2626,9 @@ _ROCM_NOT_SUPPORTED_DTYPE: list[str] = []  #
 
 def _get_and_verify_dtype(
     config: PretrainedConfig,
-    dtype: Union[str, torch.dtype],
-) -> torch.dtype:
-    # NOTE: getattr(config, "torch_dtype", torch.float32) is not correct
+    dtype: Union[str, current_framework.dtype],
+) -> current_framework.dtype:
+    # NOTE: getattr(config, "torch_dtype", current_framework.float32) is not correct
     # because config.torch_dtype can be None.
     config_dtype = getattr(config, "torch_dtype", None)
 
@@ -2640,14 +2640,14 @@ def _get_and_verify_dtype(
         config_dtype = getattr(config.vision_config, "torch_dtype", None)
 
     if config_dtype is None:
-        config_dtype = torch.float32
+        config_dtype = current_framework.float32
 
     if isinstance(dtype, str):
         dtype = dtype.lower()
         if dtype == "auto":
-            if config_dtype == torch.float32:
+            if config_dtype == current_framework.float32:
                 # Following common practice, we use float16 for float32 models
-                torch_dtype = torch.float16
+                torch_dtype = current_framework.float16
             else:
                 torch_dtype = config_dtype
 
@@ -2655,13 +2655,13 @@ def _get_and_verify_dtype(
             if (current_platform.is_cpu()
                     and current_platform.get_cpu_architecture()
                     == CpuArchEnum.POWERPC
-                    and (config_dtype == torch.float16
-                         or config_dtype == torch.float32)):
+                    and (config_dtype == current_framework.float16
+                         or config_dtype == current_framework.float32)):
                 logger.info(
                     "For POWERPC, we cast models to bfloat16 instead of "
                     "using float16 by default. Float16 is not currently "
                     "supported for POWERPC.")
-                torch_dtype = torch.bfloat16
+                torch_dtype = current_framework.bfloat16
 
             # TODO: change this condition to check if the platform support bf16
             # instead of checking the OS. For instance M2 shall supports bf16
@@ -2669,33 +2669,33 @@ def _get_and_verify_dtype(
             # the feature in the build.
             if (current_platform.is_cpu() and sys.platform.startswith("darwin")
                     and current_platform.get_cpu_architecture()
-                    == CpuArchEnum.ARM and config_dtype == torch.bfloat16):
+                    == CpuArchEnum.ARM and config_dtype == current_framework.bfloat16):
                 logger.info("For macOS with Apple Silicon, currently bfloat16 "
                             "is not supported. Setting dtype to float16.")
-                torch_dtype = torch.float16
+                torch_dtype = current_framework.float16
 
-            if current_platform.is_hpu() and config_dtype == torch.float16:
+            if current_platform.is_hpu() and config_dtype == current_framework.float16:
                 logger.info(
                     "For HPU, we cast models to bfloat16 instead of "
                     "using float16 by default. Please specify `dtype` if you "
                     "want to use float16.")
-                torch_dtype = torch.bfloat16
+                torch_dtype = current_framework.bfloat16
         else:
             if dtype not in _STR_DTYPE_TO_TORCH_DTYPE:
                 raise ValueError(f"Unknown dtype: {dtype}")
             torch_dtype = _STR_DTYPE_TO_TORCH_DTYPE[dtype]
-    elif isinstance(dtype, torch.dtype):
+    elif isinstance(dtype, current_framework.dtype):
         torch_dtype = dtype
     else:
         raise ValueError(f"Unknown dtype: {dtype}")
 
     # Verify the dtype.
     if torch_dtype != config_dtype:
-        if torch_dtype == torch.float32:
+        if torch_dtype == current_framework.float32:
             # Upcasting to float32 is allowed.
             logger.info("Upcasting %s to %s.", config_dtype, torch_dtype)
             pass
-        elif config_dtype == torch.float32:
+        elif config_dtype == current_framework.float32:
             # Downcasting from float32 to float16 or bfloat16 is allowed.
             logger.info("Downcasting %s to %s.", config_dtype, torch_dtype)
             pass
@@ -3095,7 +3095,7 @@ class CompilationConfig(BaseModel):
             Note that this is orthogonal to the cudagraph capture logic
             outside of compilation.
             TODO: move outside cudagraph logic into compilation.
-            torch.compile will handle cudagraph capture logic in the future.
+            current_framework.compile will handle cudagraph capture logic in the future.
         - cudagraph_capture_sizes: sizes to capture cudagraph.
             - None (default): capture sizes are inferred from vllm config.
             - list[int]: capture sizes are specified as given.
@@ -3302,7 +3302,7 @@ class CompilationConfig(BaseModel):
         if self.level == CompilationLevel.NO_COMPILATION:
             raise ValueError("No compilation level is set.")
 
-        from torch._dynamo.backends.registry import list_backends
+        from current_framework._dynamo.backends.registry import list_backends
         torch_backends = list_backends(exclude_tags=tuple())
         if self.level in [
                 CompilationLevel.DYNAMO_AS_IS, CompilationLevel.DYNAMO_ONCE
@@ -3458,7 +3458,7 @@ class VllmConfig:
         if self.lora_config:
             vllm_factors.append(self.lora_config.compute_hash())
             # LoRA creates static buffers based on max_num_batched_tokens.
-            # The tensor sizes and strides get captured in the torch.compile
+            # The tensor sizes and strides get captured in the current_framework.compile
             # graph explicitly.
             vllm_factors.append(
                 str(self.scheduler_config.max_num_batched_tokens))
@@ -3580,7 +3580,7 @@ class VllmConfig:
         if self.scheduler_config is not None and \
             self.model_config is not None and \
             self.scheduler_config.chunked_prefill_enabled and \
-            self.model_config.dtype == torch.float32 and \
+            self.model_config.dtype == current_framework.float32 and \
             current_platform.get_device_capability() == (7, 5):
             logger.warning_once(
                 "Turing devices tensor cores do not support float32 matmul. "
@@ -3612,16 +3612,16 @@ class VllmConfig:
             self.compilation_config.level != CompilationLevel.NO_COMPILATION \
                 and not envs.VLLM_USE_V1:
             logger.warning(
-                "CPU offload is not supported with `torch.compile` in v0 yet."
-                " Disabling `torch.compile`.")
+                "CPU offload is not supported with `current_framework.compile` in v0 yet."
+                " Disabling `current_framework.compile`.")
             self.compilation_config.level = CompilationLevel.NO_COMPILATION
 
         if ((not envs.VLLM_USE_V1) and self.lora_config is not None
                 and self.compilation_config.level
                 != CompilationLevel.NO_COMPILATION):
             logger.warning(
-                "LoRA for V0 is not supported with `torch.compile` yet. "
-                "Disabling `torch.compile`.")
+                "LoRA for V0 is not supported with `current_framework.compile` yet. "
+                "Disabling `current_framework.compile`.")
             self.compilation_config.level = CompilationLevel.NO_COMPILATION
 
 
@@ -3783,7 +3783,7 @@ def set_current_vllm_config(vllm_config: VllmConfig, check_compile=False):
             # If it is not increased, it means the model does not support
             # compilation (does not have @support_torch_compile decorator).
             logger.warning(
-                "`torch.compile` is turned on, but the model %s"
+                "`current_framework.compile` is turned on, but the model %s"
                 " does not support it. Please open an issue on GitHub"
                 " if you want it to be supported.",
                 vllm_config.model_config.model)

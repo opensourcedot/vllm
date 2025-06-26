@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 import os
 
-from .frameworks import current_framework
+from vllm.frameworks import current_framework
 
 # set some common config/environment variables that should be set
 # for all processes created by vllm and all processes

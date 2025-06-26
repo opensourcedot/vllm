@@ -184,7 +184,6 @@ class LLM:
         task: TaskOption = "auto",
         override_pooler_config: Optional[PoolerConfig] = None,
         compilation_config: Optional[Union[int, dict[str, Any]]] = None,
-        framework: str = "pt",
         **kwargs,
     ) -> None:
         '''

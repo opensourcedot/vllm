@@ -3,8 +3,8 @@
 from concurrent.futures import Future
 from typing import Union
 
-import torch
-import torch.distributed as dist
+from vllm.frameworks import current_framework
+import vllm.frameworks.distributed as dist
 
 from vllm.config import VllmConfig
 from vllm.executor.executor_base import ExecutorBase
@@ -98,6 +98,6 @@ class ExecutorWithExternalLauncher(ExecutorWithExternalLauncherV0, Executor):
         memory = super().determine_available_memory()
         from vllm.distributed.parallel_state import get_world_group
         cpu_group = get_world_group().cpu_group
-        memory_tensor = torch.tensor([memory], device="cpu", dtype=torch.int64)
+        memory_tensor = current_framework.tensor([memory], device="cpu", dtype=current_framework.int64)
         dist.all_reduce(memory_tensor, group=cpu_group, op=dist.ReduceOp.MIN)
         return [memory_tensor.item()]
